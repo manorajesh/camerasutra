@@ -245,7 +245,8 @@ public:
         message.timestamp = timestamp;
         message.sensor_ids.push_back(0);
         message.images.push_back(image.clone());
-        message.masks.push_back(cv::Mat());
+        // Mask convention: 0 = trackable, 255 = excluded. All-zeros = no masking.
+        message.masks.push_back(cv::Mat::zeros((int)height, (int)width, CV_8UC1));
         manager_->feed_measurement_camera(message);
         updatePoseFromManager(timestamp);
     }
