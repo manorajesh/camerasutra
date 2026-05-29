@@ -17,6 +17,44 @@ SDK_PATH="$(xcrun --sdk "$SDK" --show-sdk-path)"
 GENERATOR="${GENERATOR:-Ninja}"
 CMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH:-}"
 
+if [ -z "$CMAKE_PREFIX_PATH" ] && command -v brew >/dev/null 2>&1; then
+  prefixes=()
+  for formula in eigen opencv boost ceres-solver metis suite-sparse; do
+    if prefix="$(brew --prefix "$formula" 2>/dev/null)"; then
+      prefixes+=("$prefix")
+    fi
+  done
+  if [ "${#prefixes[@]}" -gt 0 ]; then
+    CMAKE_PREFIX_PATH="$(IFS=';'; echo "${prefixes[*]}")"
+  fi
+fi
+
+EIGEN3_DIR="${EIGEN3_DIR:-}"
+OPENCV_DIR="${OPENCV_DIR:-}"
+CERES_DIR="${CERES_DIR:-}"
+SUITESPARSE_DIR="${SUITESPARSE_DIR:-}"
+METIS_INCLUDE_DIR="${METIS_INCLUDE_DIR:-}"
+METIS_LIBRARY="${METIS_LIBRARY:-}"
+
+if [ -z "$EIGEN3_DIR" ] && [ -d "/opt/homebrew/opt/eigen/share/eigen3/cmake" ]; then
+  EIGEN3_DIR="/opt/homebrew/opt/eigen/share/eigen3/cmake"
+fi
+if [ -z "$OPENCV_DIR" ] && [ -d "/opt/homebrew/opt/opencv/lib/cmake/opencv4" ]; then
+  OPENCV_DIR="/opt/homebrew/opt/opencv/lib/cmake/opencv4"
+fi
+if [ -z "$CERES_DIR" ] && [ -d "/opt/homebrew/opt/ceres-solver/lib/cmake/Ceres" ]; then
+  CERES_DIR="/opt/homebrew/opt/ceres-solver/lib/cmake/Ceres"
+fi
+if [ -z "$SUITESPARSE_DIR" ] && [ -d "/opt/homebrew/opt/suite-sparse/lib/cmake/SuiteSparse" ]; then
+  SUITESPARSE_DIR="/opt/homebrew/opt/suite-sparse/lib/cmake/SuiteSparse"
+fi
+if [ -z "$METIS_INCLUDE_DIR" ] && [ -f "/opt/homebrew/opt/metis/include/metis.h" ]; then
+  METIS_INCLUDE_DIR="/opt/homebrew/opt/metis/include"
+fi
+if [ -z "$METIS_LIBRARY" ] && [ -f "/opt/homebrew/opt/metis/lib/libmetis.dylib" ]; then
+  METIS_LIBRARY="/opt/homebrew/opt/metis/lib/libmetis.dylib"
+fi
+
 if ! command -v cmake >/dev/null 2>&1; then
   echo "error: cmake is required" >&2
   exit 1
@@ -51,10 +89,23 @@ cmake -S "$OPENVINS_DIR/ov_msckf" \
   -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR/$PLATFORM" \
   -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH" \
   -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+  -DCMAKE_CXX_FLAGS="-include cassert" \
   -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+  -DCMAKE_POLICY_DEFAULT_CMP0167=OLD \
+  -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
+  -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
+  -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH \
+  -DEigen3_DIR="$EIGEN3_DIR" \
+  -DOpenCV_DIR="$OPENCV_DIR" \
+  -DCeres_DIR="$CERES_DIR" \
+  -DSuiteSparse_DIR="$SUITESPARSE_DIR" \
+  -DMETIS_INCLUDE_DIR="$METIS_INCLUDE_DIR" \
+  -DMETIS_LIBRARY="$METIS_LIBRARY" \
   -DENABLE_ROS=OFF \
   -DENABLE_ARUCO_TAGS=OFF \
+  -DBUILD_OPENVINS_TOOLS=OFF \
+  -DOPENVINS_LIBRARY_TYPE=STATIC \
   -DDISABLE_MATPLOTLIB=ON
 
 cmake --build "$BUILD_DIR/$PLATFORM" --config "$BUILD_TYPE" --target ov_msckf_lib
