@@ -10,10 +10,14 @@
 #if CAMERASUTRA_ENABLE_OPENVINS_RUNTIME
 #include <memory>
 
-// OpenCV defines enum cases named NO in some modules. Objective-C headers define
-// NO as a macro, so remove it before including OpenCV-heavy OpenVINS headers.
+// Objective-C and Xcode define macros that collide with OpenVINS identifiers.
+// NO is defined by ObjC runtime; DEBUG is set to 1 by Xcode debug builds.
+// OpenVINS uses both as enum member names, so we clear them before its headers.
 #ifdef NO
 #undef NO
+#endif
+#ifdef DEBUG
+#undef DEBUG
 #endif
 
 #include <opencv2/core.hpp>
