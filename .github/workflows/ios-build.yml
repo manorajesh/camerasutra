@@ -17,6 +17,43 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Install build tools
+        run: brew install cmake ninja eigen
+
+      - name: Cache OpenVINS XCFramework
+        id: cache-openvins
+        uses: actions/cache@v4
+        with:
+          path: Vendor/OpenVINS
+          key: openvins-xcframework-${{ hashFiles('scripts/build_openvins_ios.sh', 'scripts/package_openvins_xcframework.sh', 'third_party/open_vins/.git') }}
+
+      - name: Build OpenVINS XCFramework
+        if: steps.cache-openvins.outputs.cache-hit != 'true'
+        run: |
+          brew install opencv boost ceres-solver metis suite-sparse
+          PLATFORM=OS64           SDK=iphoneos        ARCHS=arm64 bash scripts/build_openvins_ios.sh
+          PLATFORM=SIMULATORARM64 SDK=iphonesimulator ARCHS=arm64 bash scripts/build_openvins_ios.sh
+          bash scripts/package_openvins_xcframework.sh
+
+      - name: Cache OpenCV XCFramework
+        id: cache-opencv
+        uses: actions/cache@v4
+        with:
+          path: |
+            Vendor/opencv2.xcframework
+            build/opencv-ios/opencv-4.13.0-src
+          key: opencv-xcframework-4.13.0-${{ runner.arch }}
+
+      - name: Build OpenCV XCFramework
+        if: steps.cache-opencv.outputs.cache-hit != 'true'
+        run: |
+          PLATFORM=OS64           SDK=iphoneos        ARCHS=arm64 bash scripts/build_opencv_ios.sh
+          PLATFORM=SIMULATORARM64 SDK=iphonesimulator ARCHS=arm64 bash scripts/build_opencv_ios.sh
+          bash scripts/package_opencv_xcframework.sh
+
+      - name: Fetch Eigen Headers
+        run: bash scripts/fetch_eigen.sh
+
       - name: Set Default Scheme
         run: |
           scheme_list=$(xcodebuild -list -json | tr -d "\n")
