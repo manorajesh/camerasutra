@@ -817,6 +817,12 @@ extension CaptureSession: AVCaptureDataOutputSynchronizerDelegate {
                         self.intrinsicsFy = Double(m[1, 1])
                         self.intrinsicsCx = Double(m[2, 0])
                         self.intrinsicsCy = Double(m[2, 1])
+                        self.vioTracker?.configureCamera(width: Int(width),
+                                                         height: Int(height),
+                                                         fx: Double(m[0, 0]),
+                                                         fy: Double(m[1, 1]),
+                                                         cx: Double(m[2, 0]),
+                                                         cy: Double(m[2, 1]))
                     }
                 }
             }

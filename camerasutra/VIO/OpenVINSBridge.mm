@@ -54,8 +54,18 @@ struct StubPose {
     NSInteger imuSampleCount = 0;
     NSInteger featureCount = 0;
     bool configured = false;
+    bool cameraConfigured = false;
     bool initialized = false;
     std::string status = "OpenVINS bridge idle";
+};
+
+struct CameraCalibration {
+    NSInteger width = 0;
+    NSInteger height = 0;
+    double fx = 0.0;
+    double fy = 0.0;
+    double cx = 0.0;
+    double cy = 0.0;
 };
 
 class OpenVINSTrackerStub {
@@ -67,12 +77,37 @@ public:
         return true;
     }
 
+    void configureCamera(NSInteger width,
+                         NSInteger height,
+                         double fx,
+                         double fy,
+                         double cx,
+                         double cy) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        camera_ = {width, height, fx, fy, cx, cy};
+        pose_.cameraConfigured = width > 0 && height > 0 && fx > 0 && fy > 0;
+        if (pose_.configured) {
+            pose_.status = pose_.cameraConfigured
+                ? "OpenVINS calibrated bridge ready"
+                : "OpenVINS waiting for camera intrinsics";
+        }
+    }
+
     void reset() {
         std::lock_guard<std::mutex> lock(mutex_);
         const bool wasConfigured = pose_.configured;
+        const CameraCalibration camera = camera_;
         pose_ = StubPose();
         pose_.configured = wasConfigured;
-        pose_.status = wasConfigured ? "OpenVINS bridge ready" : "OpenVINS bridge idle";
+        camera_ = camera;
+        pose_.cameraConfigured = camera_.width > 0 && camera_.height > 0 && camera_.fx > 0 && camera_.fy > 0;
+        if (wasConfigured) {
+            pose_.status = pose_.cameraConfigured
+                ? "OpenVINS calibrated bridge ready"
+                : "OpenVINS waiting for camera intrinsics";
+        } else {
+            pose_.status = "OpenVINS bridge idle";
+        }
     }
 
     void pushIMU(double timestamp) {
@@ -80,7 +115,9 @@ public:
         pose_.timestamp = timestamp;
         pose_.imuSampleCount += 1;
         if (pose_.configured) {
-            pose_.status = "OpenVINS waiting for static libs";
+            pose_.status = pose_.cameraConfigured
+                ? "OpenVINS runtime link pending"
+                : "OpenVINS waiting for camera intrinsics";
         }
     }
 
@@ -89,7 +126,9 @@ public:
         pose_.timestamp = timestamp;
         pose_.cameraFrameCount += 1;
         if (pose_.configured) {
-            pose_.status = "OpenVINS waiting for static libs";
+            pose_.status = pose_.cameraConfigured
+                ? "OpenVINS runtime link pending"
+                : "OpenVINS waiting for camera intrinsics";
         }
     }
 
@@ -101,6 +140,7 @@ public:
 private:
     mutable std::mutex mutex_;
     StubPose pose_;
+    CameraCalibration camera_;
 };
 
 } // namespace
@@ -130,6 +170,15 @@ private:
 - (BOOL)configureWithError:(NSError **)error {
     (void)error;
     return _tracker->configure();
+}
+
+- (void)configureCameraWithWidth:(NSInteger)width
+                          height:(NSInteger)height
+                              fx:(double)fx
+                              fy:(double)fy
+                              cx:(double)cx
+                              cy:(double)cy {
+    _tracker->configureCamera(width, height, fx, fy, cx, cy);
 }
 
 - (void)reset {

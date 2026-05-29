@@ -7,7 +7,7 @@ Swift talks only to `VIOTracker`. `VIOTracker` calls `OpenVINSBridge`, an Object
 Current state:
 
 - `OpenVINSBridge` is a compile-time stub.
-- The app already feeds timestamped CoreMotion IMU samples and AVCapture luma frames into the bridge API.
+- The app already feeds camera intrinsics, timestamped CoreMotion IMU samples, and AVCapture luma frames into the bridge API.
 - The debug overlay reports bridge status and sample counts.
 
 Next state:

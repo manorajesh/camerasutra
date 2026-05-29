@@ -34,6 +34,21 @@ final class VIOTracker: ObservableObject {
         refreshPose()
     }
 
+    func configureCamera(width: Int,
+                         height: Int,
+                         fx: Double,
+                         fy: Double,
+                         cx: Double,
+                         cy: Double) {
+        bridge.configureCamera(withWidth: width,
+                               height: height,
+                               fx: fx,
+                               fy: fy,
+                               cx: cx,
+                               cy: cy)
+        refreshPose()
+    }
+
     func pushIMU(timestamp: TimeInterval,
                  acceleration: SIMD3<Double>,
                  gyro: SIMD3<Double>) {

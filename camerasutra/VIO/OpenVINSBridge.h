@@ -39,6 +39,12 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, readonly) BOOL configured;
 
 - (BOOL)configureWithError:(NSError *_Nullable *_Nullable)error;
+- (void)configureCameraWithWidth:(NSInteger)width
+                          height:(NSInteger)height
+                              fx:(double)fx
+                              fy:(double)fy
+                              cx:(double)cx
+                              cy:(double)cy;
 - (void)reset;
 - (void)pushIMUAtTimestamp:(double)timestamp
                     accelX:(double)accelX

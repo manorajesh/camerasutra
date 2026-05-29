@@ -32,9 +32,13 @@ The OpenVINS iOS build is scaffolded as a separate CMake step:
 
 ```sh
 scripts/build_openvins_ios.sh
+PLATFORM=SIMULATORARM64 SDK=iphonesimulator ARCHS=arm64 scripts/build_openvins_ios.sh
+scripts/package_openvins_xcframework.sh
 ```
 
-The script builds from `third_party/open_vins/ov_msckf` with ROS and ArUco disabled. It expects iOS-compatible dependency prefixes for Eigen, OpenCV, Boost, and Ceres to be available through `CMAKE_PREFIX_PATH`.
+The build script compiles `third_party/open_vins/ov_msckf` with ROS, ArUco, and desktop test executables disabled, then installs static library slices under `Vendor/OpenVINS`. The packaging script creates `Vendor/OpenVINS/OpenVINS.xcframework`.
+
+The OpenVINS archive is only one piece of the runtime link. The app target still needs matching iOS and simulator slices for OpenCV, Boost, Ceres, SuiteSparse, glog, and gflags before `OpenVINSBridge.mm` can call `ov_msckf::VioManager` directly.
 
 ## License
 
