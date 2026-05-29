@@ -9,10 +9,9 @@
 //    - CoreMotion IMU rotation alongside
 //
 //  Format can be switched live among available presets so you can verify each
-//  combination actually streams. Translation tracking is NOT implemented here
-//  (it's a separate algorithm beyond POC scope) — but the depth data needed
-//  for it is displayed as a live colorized depth map plus a per-frame stats
-//  readout, proving the input to that future solver is available.
+//  combination actually streams. Synchronized depth and CoreMotion are also
+//  fed into a first-pass fixed-rotation RGB-D translation solver, with a
+//  SceneKit world-space debug view showing predicted and accepted poses.
 //
 //  REQUIRED Info.plist:
 //    NSCameraUsageDescription   = "Camera tracking demo"
@@ -41,54 +40,19 @@ import Combine
 struct ContentView: View {
     @StateObject private var session = CaptureSession()
     @StateObject private var motion = MotionTracker()
-    @State private var authStatus: AVAuthorizationStatus = .notDetermined
     @State private var showFormatSheet = false
     
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
             
-            if authStatus == .authorized {
-                VStack(spacing: 0) {
-                    // Top: dual previews (RGB + depth)
-                    HStack(spacing: 4) {
-                        videoPane
-                        depthPane
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.top, 8)
-                    
-                    // Middle: status panels
-                    ScrollView {
-                        VStack(spacing: 10) {
-                            formatPanel
-                            rotationPanel
-                            depthStatsPanel
-                            intrinsicsPanel
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                    }
-                }
-            } else {
-                ContentUnavailableView("Camera access required", systemImage: "camera")
-                    .foregroundStyle(.white)
-            }
+            trackingPane
         }
         .preferredColorScheme(.dark)
         .task {
-            authStatus = AVCaptureDevice.authorizationStatus(for: .video)
-            if authStatus == .notDetermined {
-                let g = await AVCaptureDevice.requestAccess(for: .video)
-                authStatus = g ? .authorized : .denied
-            }
-            if authStatus == .authorized {
-                session.start()
-                motion.start()
-            }
+            motion.start()
         }
         .onDisappear {
-            session.stop()
             motion.stop()
         }
         .sheet(isPresented: $showFormatSheet) {
@@ -161,6 +125,46 @@ struct ContentView: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
     }
+
+    private var trackingPane: some View {
+        ZStack(alignment: .topLeading) {
+            TrackingDebugView(snapshot: motion.rotationSnapshot)
+                .ignoresSafeArea()
+                .background(Color.black)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(motion.rotationSnapshot.status)
+                    .font(.caption.weight(.bold).monospaced())
+                Text("rot \(formatQuaternion(motion.rotationSnapshot.rotation))")
+                Text(String(format: "pitch %+.1f  roll %+.1f  yaw %+.1f",
+                            motion.pitchDeg,
+                            motion.rollDeg,
+                            motion.yawDeg))
+            }
+            .font(.caption2.monospaced())
+            .foregroundStyle(.white)
+            .padding(10)
+            .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
+            .padding(.top, 10)
+            .padding(.leading, 10)
+            VStack {
+                Spacer()
+                HStack {
+                    Spacer()
+                    Button {
+                        motion.recenter()
+                    } label: {
+                        Image(systemName: "scope")
+                            .font(.title3.weight(.semibold))
+                            .frame(width: 48, height: 48)
+                            .background(.black.opacity(0.55), in: Circle())
+                            .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(18)
+                }
+            }
+        }
+    }
     
     // MARK: Panels
     
@@ -222,7 +226,7 @@ struct ContentView: View {
                 KV("Farthest point", String(format: "%.2f m", session.depthMax))
                 KV("Mean depth",     String(format: "%.2f m", session.depthMean))
                 KV("Valid points",   "\(session.validDepthPoints) / \(session.totalDepthPoints)")
-                Text("Point cloud is derived per-frame by unprojecting depth pixels through camera intrinsics. Translation solver (RGB-D + locked IMU rotation) is out of POC scope, but the inputs are flowing — see the live values above.")
+                Text("Depth is unprojected through per-frame intrinsics and fed into the fixed-rotation RGB-D translation solver.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .padding(.top, 2)
@@ -243,6 +247,34 @@ struct ContentView: View {
                     .padding(.top, 2)
             }
         }
+    }
+
+    private var trackingPanel: some View {
+        Panel(title: "WORLD-SPACE TRANSLATION SOLVER") {
+            VStack(alignment: .leading, spacing: 6) {
+                KV("Status", session.trackingSnapshot.status)
+                KV("Position", formatVector(session.trackingSnapshot.position))
+                KV("Prediction", formatVector(session.trackingSnapshot.predictedPosition))
+                KV("Velocity", String(format: "%.2f m/s", simd_length(session.trackingSnapshot.velocity)))
+                KV("Residual", String(format: "%.3f m", session.trackingSnapshot.residualMeters))
+                KV("Inliers", "\(session.trackingSnapshot.inlierCount)")
+                KV("Map points", "\(session.trackingSnapshot.mapPointCount)")
+                KV("Condition", String(format: "%.1f", session.trackingSnapshot.conditionNumber))
+                KV("Confidence", String(format: "%.0f%%", session.trackingSnapshot.confidence * 100))
+                Text("Green is the accepted world-space camera pose. Orange is the predicted pose before the current depth solve.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 2)
+            }
+        }
+    }
+
+    private func formatVector(_ v: SIMD3<Float>) -> String {
+        String(format: "%+.2f, %+.2f, %+.2f m", v.x, v.y, v.z)
+    }
+
+    private func formatQuaternion(_ q: simd_quatf) -> String {
+        String(format: "%+.2f, %+.2f, %+.2f, %+.2f", q.vector.x, q.vector.y, q.vector.z, q.vector.w)
     }
 }
 
@@ -332,11 +364,19 @@ struct FormatPickerSheet: View {
 @MainActor
 final class MotionTracker: ObservableObject {
     private let manager = CMMotionManager()
+    let sampleStore = MotionSampleStore()
     @Published var pitchDeg: Double = 0
     @Published var rollDeg: Double = 0
     @Published var yawDeg: Double = 0
     @Published var quatString: String = "—"
     @Published var sampleRate: Double = 0
+    @Published var rotationSnapshot = {
+        var snapshot = TrackingSnapshot()
+        snapshot.status = "Rotation only"
+        snapshot.confidence = 1
+        snapshot.trail = [.zero]
+        return snapshot
+    }()
     
     private var lastSampleTime: Date?
     private var rateAvg: Double = 0
@@ -344,14 +384,31 @@ final class MotionTracker: ObservableObject {
     func start() {
         guard manager.isDeviceMotionAvailable else { return }
         manager.deviceMotionUpdateInterval = 1.0 / 100.0
-        manager.startDeviceMotionUpdates(to: .main) { [weak self] motion, _ in
+        let referenceFrame: CMAttitudeReferenceFrame = CMMotionManager.availableAttitudeReferenceFrames().contains(.xArbitraryCorrectedZVertical)
+        ? .xArbitraryCorrectedZVertical
+        : .xArbitraryZVertical
+        manager.startDeviceMotionUpdates(using: referenceFrame, to: .main) { [weak self] motion, _ in
             guard let self, let motion else { return }
+            self.sampleStore.update(from: motion)
             let a = motion.attitude
             self.pitchDeg = a.pitch * 180 / .pi
             self.rollDeg = a.roll * 180 / .pi
             self.yawDeg = a.yaw * 180 / .pi
             let q = a.quaternion
             self.quatString = String(format: "(%+.3f, %+.3f, %+.3f, %+.3f)", q.x, q.y, q.z, q.w)
+            self.rotationSnapshot = TrackingSnapshot(
+                position: .zero,
+                predictedPosition: .zero,
+                velocity: .zero,
+                rotation: self.sampleStore.relativeRotation(),
+                residualMeters: 0,
+                inlierCount: 0,
+                mapPointCount: 0,
+                conditionNumber: 0,
+                confidence: 1,
+                status: "Rotation only",
+                trail: [.zero]
+            )
             let now = Date()
             if let last = self.lastSampleTime {
                 let dt = now.timeIntervalSince(last)
@@ -367,6 +424,10 @@ final class MotionTracker: ObservableObject {
     
     func stop() {
         manager.stopDeviceMotionUpdates()
+    }
+
+    func recenter() {
+        sampleStore.recenter()
     }
 }
 
@@ -422,6 +483,8 @@ final class CaptureSession: NSObject, ObservableObject, @unchecked Sendable {
     @Published var intrinsicsFy: Double = 0
     @Published var intrinsicsCx: Double = 0
     @Published var intrinsicsCy: Double = 0
+    @Published var trackingSnapshot = TrackingSnapshot()
+    var motionSamples: MotionSampleStore?
     
     // AVFoundation
     private let session = AVCaptureSession()
@@ -444,6 +507,8 @@ final class CaptureSession: NSObject, ObservableObject, @unchecked Sendable {
     private var lastVideoPreviewUpdate: Date = .distantPast
     private var lastDepthPreviewUpdate: Date = .distantPast
     private let previewThrottle: TimeInterval = 1.0 / 15.0
+    private let tracker = RotationLockedDepthTracker()
+    private var latestIntrinsics: TrackingIntrinsics?
     
     func start() {
         sessionQueue.async {
@@ -597,6 +662,8 @@ final class CaptureSession: NSObject, ObservableObject, @unchecked Sendable {
             
             session.commitConfiguration()
             device.unlockForConfiguration()
+            tracker.reset()
+            latestIntrinsics = nil
             
             let dims = preset.format.formatDescription.dimensions
             let pix = describePixelFormat(preset.format.formatDescription.mediaSubType.rawValue)
@@ -661,6 +728,16 @@ extension CaptureSession: AVCaptureDataOutputSynchronizerDelegate {
             attachment.withUnsafeBytes { raw in
                 let buf = raw.bindMemory(to: matrix_float3x3.self)
                 if let m = buf.first {
+                    let width = CMSampleBufferGetImageBuffer(sample).map { Float(CVPixelBufferGetWidth($0)) } ?? 1
+                    let height = CMSampleBufferGetImageBuffer(sample).map { Float(CVPixelBufferGetHeight($0)) } ?? 1
+                    self.latestIntrinsics = TrackingIntrinsics(
+                        fx: m[0, 0],
+                        fy: m[1, 1],
+                        cx: m[2, 0],
+                        cy: m[2, 1],
+                        referenceWidth: width,
+                        referenceHeight: height
+                    )
                     DispatchQueue.main.async {
                         self.intrinsicsFx = Double(m[0, 0])
                         self.intrinsicsFy = Double(m[1, 1])
@@ -671,13 +748,8 @@ extension CaptureSession: AVCaptureDataOutputSynchronizerDelegate {
             }
         }
         
-        // Preview (throttled)
-        if time.timeIntervalSince(lastVideoPreviewUpdate) >= previewThrottle,
-           let pb = CMSampleBufferGetImageBuffer(sample) {
-            lastVideoPreviewUpdate = time
-            let img = renderImage(from: pb)
-            DispatchQueue.main.async { self.videoPreview = img }
-        }
+        // Preview rendering is intentionally disabled while testing tracking.
+        // CIImage/UIImage conversion was competing with the real-time solver.
     }
     
     private func handleDepthData(_ depth: AVDepthData, time: Date) {
@@ -697,20 +769,16 @@ extension CaptureSession: AVCaptureDataOutputSynchronizerDelegate {
         ? depth
         : depth.converting(toDepthDataType: kCVPixelFormatType_DepthFloat32)
         
-        // Compute stats and a colorized preview
-        let stats = computeDepthStats(depth32.depthDataMap)
-        DispatchQueue.main.async {
-            self.depthMin = stats.min
-            self.depthMax = stats.max
-            self.depthMean = stats.mean
-            self.validDepthPoints = stats.valid
-            self.totalDepthPoints = stats.total
-        }
-        
-        if time.timeIntervalSince(lastDepthPreviewUpdate) >= previewThrottle {
-            lastDepthPreviewUpdate = time
-            let img = renderDepthImage(from: depth32.depthDataMap, min: Float(stats.min), max: Float(stats.max))
-            DispatchQueue.main.async { self.depthPreview = img }
+        if let intrinsics = latestIntrinsics {
+            let snapshot = tracker.process(
+                depthMap: depth32.depthDataMap,
+                intrinsics: intrinsics,
+                motion: motionSamples?.latest(),
+                timestamp: time.timeIntervalSinceReferenceDate
+            )
+            DispatchQueue.main.async {
+                self.trackingSnapshot = snapshot
+            }
         }
     }
     
@@ -840,5 +908,3 @@ func describeColorSpace(_ cs: AVCaptureColorSpace) -> String {
     @unknown default: return "?"
     }
 }
-
-#Preview { ContentView() }
