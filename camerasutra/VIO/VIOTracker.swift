@@ -5,6 +5,7 @@ import simd
 
 struct VIOPose {
     var timestamp: TimeInterval = 0
+    /// Position relative to the current display origin (shifted by recenterDisplay).
     var position: SIMD3<Float> = .zero
     var rotation: simd_quatf = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
     var cameraFrameCount: Int = 0
@@ -12,6 +13,7 @@ struct VIOPose {
     var featureCount: Int = 0
     var initialized: Bool = false
     var status: String = "OpenVINS bridge idle"
+    var trail: [SIMD3<Float>] = [.zero]
 }
 
 @MainActor
@@ -22,6 +24,8 @@ final class VIOTracker: ObservableObject {
     private let trackingMaxDimension = 1280
     private var sourceCalibration: CameraCalibration?
     private var activeTrackingCalibration: CameraCalibration?
+    private var displayOriginOffset: SIMD3<Float> = .zero
+    private var displayTrail: [SIMD3<Float>] = [.zero]
 
     func start() {
         do {
@@ -34,6 +38,15 @@ final class VIOTracker: ObservableObject {
 
     func reset() {
         bridge.reset()
+        displayOriginOffset = .zero
+        displayTrail = [.zero]
+        refreshPose()
+    }
+
+    /// Shifts the display origin to the current VIO position without resetting the filter.
+    func recenterDisplay() {
+        displayOriginOffset = rawPosition(from: bridge.latestPose())
+        displayTrail = [.zero]
         refreshPose()
     }
 
@@ -85,9 +98,20 @@ final class VIOTracker: ObservableObject {
 
     func refreshPose() {
         let snapshot = bridge.latestPose()
+        let raw = rawPosition(from: snapshot)
+        let displayPosition = raw - displayOriginOffset
+
+        if snapshot.initialized {
+            let minStep: Float = 0.01
+            if displayTrail.last.map({ simd_distance($0, displayPosition) > minStep }) ?? true {
+                displayTrail.append(displayPosition)
+                if displayTrail.count > 300 { displayTrail.removeFirst(displayTrail.count - 300) }
+            }
+        }
+
         pose = VIOPose(
             timestamp: snapshot.timestamp,
-            position: SIMD3<Float>(Float(snapshot.px), Float(snapshot.py), Float(snapshot.pz)),
+            position: displayPosition,
             rotation: simd_normalize(simd_quatf(ix: Float(snapshot.qx),
                                                 iy: Float(snapshot.qy),
                                                 iz: Float(snapshot.qz),
@@ -96,8 +120,13 @@ final class VIOTracker: ObservableObject {
             imuSampleCount: snapshot.imuSampleCount,
             featureCount: snapshot.featureCount,
             initialized: snapshot.initialized,
-            status: snapshot.status
+            status: snapshot.status,
+            trail: displayTrail
         )
+    }
+
+    private func rawPosition(from snapshot: OpenVINSPoseSnapshot) -> SIMD3<Float> {
+        SIMD3<Float>(Float(snapshot.px), Float(snapshot.py), Float(snapshot.pz))
     }
 
     private func configureIfNeeded() throws {

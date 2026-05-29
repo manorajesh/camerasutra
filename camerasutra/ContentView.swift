@@ -145,13 +145,18 @@ struct ContentView: View {
                 .ignoresSafeArea()
                 .background(Color.black)
             VStack(alignment: .leading, spacing: 6) {
-                Text(cameraAccessDenied ? "Camera access denied" : debugSnapshot.status)
+                Text(cameraAccessDenied ? "Camera access denied" : overlayStatus)
                     .font(.caption.weight(.bold).monospaced())
                 Text("rot \(formatQuaternion(debugSnapshot.rotation))")
-                Text("points \(debugSnapshot.worldPoints.count)")
-                Text(String(format: "depth %.0f fps", session.depthFPS))
-                Text("vio \(vio.pose.status)")
-                Text("vio frames \(vio.pose.cameraFrameCount) imu \(vio.pose.imuSampleCount)")
+                if vio.pose.initialized {
+                    Text(String(format: "pos %+.2f %+.2f %+.2f",
+                                vio.pose.position.x, vio.pose.position.y, vio.pose.position.z))
+                    Text("feat \(vio.pose.featureCount)  cam \(vio.pose.cameraFrameCount)  imu \(vio.pose.imuSampleCount)")
+                } else {
+                    Text("vio \(vio.pose.status)  cam \(vio.pose.cameraFrameCount)  imu \(vio.pose.imuSampleCount)")
+                    Text("points \(debugSnapshot.worldPoints.count)")
+                    Text(String(format: "depth %.0f fps", session.depthFPS))
+                }
                 Text(String(format: "pitch %+.1f  roll %+.1f  yaw %+.1f",
                             motion.pitchDeg,
                             motion.rollDeg,
@@ -169,7 +174,7 @@ struct ContentView: View {
                     Spacer()
                     Button {
                         motion.recenter()
-                        vio.reset()
+                        vio.recenterDisplay()
                     } label: {
                         Image(systemName: "scope")
                             .font(.title3.weight(.semibold))
@@ -185,10 +190,21 @@ struct ContentView: View {
     }
 
     private var debugSnapshot: TrackingSnapshot {
+        // Once OpenVINS has initialized, drive the debug slab from VIO pose.
+        if vio.pose.initialized {
+            var snapshot = session.trackingSnapshot
+            snapshot.position = vio.pose.position
+            snapshot.predictedPosition = vio.pose.position
+            snapshot.rotation = vio.pose.rotation
+            snapshot.velocity = .zero
+            snapshot.trail = vio.pose.trail
+            return snapshot
+        }
+
+        // Fallback: depth point cloud (if available) with CoreMotion rotation.
         guard !session.trackingSnapshot.worldPoints.isEmpty else {
             return motion.rotationSnapshot
         }
-
         var snapshot = session.trackingSnapshot
         snapshot.rotation = motion.rotationSnapshot.rotation
         snapshot.position = .zero
@@ -197,7 +213,17 @@ struct ContentView: View {
         snapshot.trail = [.zero]
         return snapshot
     }
-    
+
+    private var overlayStatus: String {
+        if vio.pose.initialized {
+            return "VIO tracking"
+        }
+        if vio.pose.cameraFrameCount > 0 {
+            return vio.pose.status
+        }
+        return debugSnapshot.status
+    }
+
     // MARK: Panels
     
     private var formatPanel: some View {
