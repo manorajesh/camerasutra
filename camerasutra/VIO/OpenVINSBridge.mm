@@ -245,6 +245,7 @@ public:
         message.timestamp = timestamp;
         message.sensor_ids.push_back(0);
         message.images.push_back(image.clone());
+        message.masks.push_back(cv::Mat());
         manager_->feed_measurement_camera(message);
         updatePoseFromManager(timestamp);
     }
