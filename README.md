@@ -1,6 +1,6 @@
 # camerasutra
 
-[![iOS starter workflow](https://github.com/manorajesh/camerasutra/actions/workflows/ios-starter-workflow.yml/badge.svg)](https://github.com/manorajesh/camerasutra/actions/workflows/ios-starter-workflow.yml)
+[![iOS Build](https://github.com/manorajesh/camerasutra/actions/workflows/ios-build.yml/badge.svg)](https://github.com/manorajesh/camerasutra/actions/workflows/ios-build.yml)
 
 An iOS camera-tracking prototype for capturing high-quality Log video while developing a real-time visual-inertial tracking pipeline for virtual production and DCC camera export.
 
