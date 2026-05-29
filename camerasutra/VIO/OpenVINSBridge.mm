@@ -1,7 +1,29 @@
 #import "OpenVINSBridge.h"
 
+#ifndef CAMERASUTRA_ENABLE_OPENVINS_RUNTIME
+#define CAMERASUTRA_ENABLE_OPENVINS_RUNTIME 0
+#endif
+
 #include <mutex>
 #include <string>
+
+#if CAMERASUTRA_ENABLE_OPENVINS_RUNTIME
+#include <memory>
+
+// OpenCV defines enum cases named NO in some modules. Objective-C headers define
+// NO as a macro, so remove it before including OpenCV-heavy OpenVINS headers.
+#ifdef NO
+#undef NO
+#endif
+
+#include <opencv2/core.hpp>
+
+#include "cam/CamRadtan.h"
+#include "core/VioManager.h"
+#include "state/State.h"
+#include "types/IMU.h"
+#include "utils/sensor_data.h"
+#endif
 
 @implementation OpenVINSPoseSnapshot
 
@@ -143,10 +165,198 @@ private:
     CameraCalibration camera_;
 };
 
+#if CAMERASUTRA_ENABLE_OPENVINS_RUNTIME
+
+class OpenVINSTrackerRuntime {
+public:
+    bool configure() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pose_.configured = true;
+        pose_.status = cameraReady() ? "OpenVINS ready to initialize" : "OpenVINS waiting for camera intrinsics";
+        rebuildIfReady();
+        return true;
+    }
+
+    void configureCamera(NSInteger width,
+                         NSInteger height,
+                         double fx,
+                         double fy,
+                         double cx,
+                         double cy) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        camera_ = {width, height, fx, fy, cx, cy};
+        pose_.cameraConfigured = cameraReady();
+        pose_.status = pose_.cameraConfigured ? "OpenVINS camera calibrated" : "OpenVINS waiting for camera intrinsics";
+        rebuildIfReady();
+    }
+
+    void reset() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        manager_.reset();
+        pose_ = StubPose();
+        pose_.configured = true;
+        pose_.cameraConfigured = cameraReady();
+        pose_.status = pose_.cameraConfigured ? "OpenVINS reset" : "OpenVINS waiting for camera intrinsics";
+        rebuildIfReady();
+    }
+
+    void pushIMU(double timestamp,
+                 double accelX,
+                 double accelY,
+                 double accelZ,
+                 double gyroX,
+                 double gyroY,
+                 double gyroZ) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pose_.timestamp = timestamp;
+        pose_.imuSampleCount += 1;
+        if (!manager_) {
+            pose_.status = cameraReady() ? "OpenVINS manager pending" : "OpenVINS waiting for camera intrinsics";
+            return;
+        }
+
+        ov_core::ImuData message;
+        message.timestamp = timestamp;
+        message.am << accelX, accelY, accelZ;
+        message.wm << gyroX, gyroY, gyroZ;
+        manager_->feed_measurement_imu(message);
+        updatePoseFromManager(timestamp);
+    }
+
+    void pushFrame(double timestamp,
+                   NSInteger width,
+                   NSInteger height,
+                   NSInteger bytesPerRow,
+                   const uint8_t *luma) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pose_.timestamp = timestamp;
+        pose_.cameraFrameCount += 1;
+        if (!manager_) {
+            pose_.status = cameraReady() ? "OpenVINS manager pending" : "OpenVINS waiting for camera intrinsics";
+            return;
+        }
+
+        cv::Mat image((int)height, (int)width, CV_8UC1, const_cast<uint8_t *>(luma), (size_t)bytesPerRow);
+        ov_core::CameraData message;
+        message.timestamp = timestamp;
+        message.sensor_ids.push_back(0);
+        message.images.push_back(image.clone());
+        manager_->feed_measurement_camera(message);
+        updatePoseFromManager(timestamp);
+    }
+
+    StubPose latest() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return pose_;
+    }
+
+private:
+    bool cameraReady() const {
+        return camera_.width > 0 && camera_.height > 0 && camera_.fx > 0 && camera_.fy > 0;
+    }
+
+    void rebuildIfReady() {
+        if (!pose_.configured || !cameraReady() || manager_) {
+            return;
+        }
+
+        ov_msckf::VioManagerOptions params;
+        params.state_options.num_cameras = 1;
+        params.state_options.max_clone_size = 11;
+        params.state_options.max_slam_features = 0;
+        params.state_options.max_aruco_features = 0;
+        params.state_options.do_calib_camera_pose = false;
+        params.state_options.do_calib_camera_intrinsics = false;
+        params.state_options.do_calib_camera_timeoffset = false;
+        params.state_options.do_calib_imu_intrinsics = false;
+        params.state_options.do_calib_imu_g_sensitivity = false;
+        params.use_stereo = false;
+        params.use_aruco = false;
+        params.use_klt = true;
+        params.downsample_cameras = false;
+        params.num_opencv_threads = 2;
+        params.num_pts = 180;
+        params.fast_threshold = 20;
+        params.grid_x = 6;
+        params.grid_y = 4;
+        params.min_px_dist = 12;
+        params.track_frequency = 30.0;
+        params.try_zupt = true;
+        params.zupt_only_at_beginning = true;
+        params.init_options.init_max_features = 80;
+        params.init_options.init_window_time = 1.0;
+
+        Eigen::VectorXd intrinsics = Eigen::VectorXd::Zero(8);
+        intrinsics << camera_.fx, camera_.fy, camera_.cx, camera_.cy, 0.0, 0.0, 0.0, 0.0;
+        auto camera = std::make_shared<ov_core::CamRadtan>((int)camera_.width, (int)camera_.height);
+        camera->set_value(intrinsics);
+        params.camera_intrinsics.clear();
+        params.camera_intrinsics.insert({0, camera});
+
+        Eigen::Matrix<double, 7, 1> extrinsics;
+        extrinsics << 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0;
+        params.camera_extrinsics.clear();
+        params.camera_extrinsics.insert({0, extrinsics});
+
+        params.vec_dw << 1.0, 0.0, 0.0, 1.0, 0.0, 1.0;
+        params.vec_da << 1.0, 0.0, 0.0, 1.0, 0.0, 1.0;
+        params.vec_tg.setZero();
+        params.q_ACCtoIMU << 0.0, 0.0, 0.0, 1.0;
+        params.q_GYROtoIMU << 0.0, 0.0, 0.0, 1.0;
+        params.calib_camimu_dt = 0.0;
+
+        manager_ = std::make_unique<ov_msckf::VioManager>(params);
+        pose_.status = "OpenVINS manager running";
+    }
+
+    void updatePoseFromManager(double timestamp) {
+        if (!manager_) {
+            return;
+        }
+        pose_.initialized = manager_->initialized();
+        pose_.featureCount = (NSInteger)manager_->get_good_features_MSCKF().size();
+        if (!pose_.initialized) {
+            pose_.status = "OpenVINS initializing";
+            return;
+        }
+
+        auto state = manager_->get_state();
+        if (!state || !state->_imu) {
+            pose_.status = "OpenVINS waiting for state";
+            return;
+        }
+
+        const Eigen::Vector4d q = state->_imu->quat();
+        const Eigen::Vector3d p = state->_imu->pos();
+        pose_.timestamp = timestamp;
+        pose_.qx = q(0);
+        pose_.qy = q(1);
+        pose_.qz = q(2);
+        pose_.qw = q(3);
+        pose_.px = p(0);
+        pose_.py = p(1);
+        pose_.pz = p(2);
+        pose_.status = "OpenVINS tracking";
+    }
+
+    mutable std::mutex mutex_;
+    StubPose pose_;
+    CameraCalibration camera_;
+    std::unique_ptr<ov_msckf::VioManager> manager_;
+};
+
+using OpenVINSTracker = OpenVINSTrackerRuntime;
+
+#else
+
+using OpenVINSTracker = OpenVINSTrackerStub;
+
+#endif
+
 } // namespace
 
 @interface OpenVINSBridge ()
-@property(nonatomic) OpenVINSTrackerStub *tracker;
+@property(nonatomic) OpenVINSTracker *tracker;
 @end
 
 @implementation OpenVINSBridge
@@ -154,7 +364,7 @@ private:
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _tracker = new OpenVINSTrackerStub();
+        _tracker = new OpenVINSTracker();
     }
     return self;
 }
@@ -192,6 +402,9 @@ private:
                      gyroX:(double)gyroX
                      gyroY:(double)gyroY
                      gyroZ:(double)gyroZ {
+#if CAMERASUTRA_ENABLE_OPENVINS_RUNTIME
+    _tracker->pushIMU(timestamp, accelX, accelY, accelZ, gyroX, gyroY, gyroZ);
+#else
     (void)accelX;
     (void)accelY;
     (void)accelZ;
@@ -199,6 +412,7 @@ private:
     (void)gyroY;
     (void)gyroZ;
     _tracker->pushIMU(timestamp);
+#endif
 }
 
 - (void)pushFrameAtTimestamp:(double)timestamp
@@ -206,11 +420,15 @@ private:
                       height:(NSInteger)height
                  bytesPerRow:(NSInteger)bytesPerRow
                         luma:(const uint8_t *)luma {
+#if CAMERASUTRA_ENABLE_OPENVINS_RUNTIME
+    _tracker->pushFrame(timestamp, width, height, bytesPerRow, luma);
+#else
     (void)width;
     (void)height;
     (void)bytesPerRow;
     (void)luma;
     _tracker->pushFrame(timestamp);
+#endif
 }
 
 - (OpenVINSPoseSnapshot *)latestPose {

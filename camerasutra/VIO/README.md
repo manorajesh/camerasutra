@@ -12,6 +12,6 @@ Current state:
 
 Next state:
 
-- Replace the C++ stub in `OpenVINSBridge.mm` with `ov_msckf::VioManager`.
+- Link the iOS dependency XCFrameworks and enable `CAMERASUTRA_ENABLE_OPENVINS_RUNTIME`.
 - Configure OpenVINS programmatically from camera intrinsics, IMU noise, and camera-to-IMU calibration.
 - Publish the real OpenVINS pose through the existing `VIOPose` Swift model.

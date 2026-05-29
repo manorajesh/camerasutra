@@ -19,6 +19,9 @@ final class VIOTracker: ObservableObject {
     @Published private(set) var pose = VIOPose()
 
     private let bridge = OpenVINSBridge()
+    private let trackingMaxDimension = 1280
+    private var sourceCalibration: CameraCalibration?
+    private var activeTrackingCalibration: CameraCalibration?
 
     func start() {
         do {
@@ -40,13 +43,12 @@ final class VIOTracker: ObservableObject {
                          fy: Double,
                          cx: Double,
                          cy: Double) {
-        bridge.configureCamera(withWidth: width,
-                               height: height,
-                               fx: fx,
-                               fy: fy,
-                               cx: cx,
-                               cy: cy)
-        refreshPose()
+        sourceCalibration = CameraCalibration(width: width,
+                                              height: height,
+                                              fx: fx,
+                                              fy: fy,
+                                              cx: cx,
+                                              cy: cy)
     }
 
     func pushIMU(timestamp: TimeInterval,
@@ -65,19 +67,20 @@ final class VIOTracker: ObservableObject {
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
 
-        guard let baseAddress = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) ?? CVPixelBufferGetBaseAddress(pixelBuffer) else {
+        guard let frame = makeTrackingLumaFrame(from: pixelBuffer) else {
             return
         }
 
-        let width = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0) > 0 ? CVPixelBufferGetWidthOfPlane(pixelBuffer, 0) : CVPixelBufferGetWidth(pixelBuffer)
-        let height = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0) > 0 ? CVPixelBufferGetHeightOfPlane(pixelBuffer, 0) : CVPixelBufferGetHeight(pixelBuffer)
-        let bytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0) > 0 ? CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0) : CVPixelBufferGetBytesPerRow(pixelBuffer)
+        configureBridgeForTrackingFrame(width: frame.width, height: frame.height)
 
-        bridge.pushFrame(atTimestamp: timestamp,
-                         width: width,
-                         height: height,
-                         bytesPerRow: bytesPerRow,
-                         luma: baseAddress.assumingMemoryBound(to: UInt8.self))
+        frame.bytes.withUnsafeBufferPointer { buffer in
+            guard let baseAddress = buffer.baseAddress else { return }
+            bridge.pushFrame(atTimestamp: timestamp,
+                             width: frame.width,
+                             height: frame.height,
+                             bytesPerRow: frame.width,
+                             luma: baseAddress)
+        }
     }
 
     func refreshPose() {
@@ -101,4 +104,132 @@ final class VIOTracker: ObservableObject {
         guard !bridge.configured else { return }
         try bridge.configure()
     }
+
+    private func configureBridgeForTrackingFrame(width: Int, height: Int) {
+        guard let sourceCalibration else { return }
+
+        let sx = Double(width) / Double(sourceCalibration.width)
+        let sy = Double(height) / Double(sourceCalibration.height)
+        let trackingCalibration = CameraCalibration(width: width,
+                                                    height: height,
+                                                    fx: sourceCalibration.fx * sx,
+                                                    fy: sourceCalibration.fy * sy,
+                                                    cx: sourceCalibration.cx * sx,
+                                                    cy: sourceCalibration.cy * sy)
+        guard trackingCalibration != activeTrackingCalibration else { return }
+
+        activeTrackingCalibration = trackingCalibration
+        bridge.configureCamera(withWidth: trackingCalibration.width,
+                               height: trackingCalibration.height,
+                               fx: trackingCalibration.fx,
+                               fy: trackingCalibration.fy,
+                               cx: trackingCalibration.cx,
+                               cy: trackingCalibration.cy)
+    }
+
+    private func makeTrackingLumaFrame(from pixelBuffer: CVPixelBuffer) -> TrackingLumaFrame? {
+        let sourceWidth = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0) > 0 ? CVPixelBufferGetWidthOfPlane(pixelBuffer, 0) : CVPixelBufferGetWidth(pixelBuffer)
+        let sourceHeight = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0) > 0 ? CVPixelBufferGetHeightOfPlane(pixelBuffer, 0) : CVPixelBufferGetHeight(pixelBuffer)
+        guard sourceWidth > 0, sourceHeight > 0 else { return nil }
+
+        let scale = min(1.0, Double(trackingMaxDimension) / Double(max(sourceWidth, sourceHeight)))
+        let width = max(1, Int((Double(sourceWidth) * scale).rounded()))
+        let height = max(1, Int((Double(sourceHeight) * scale).rounded()))
+        var bytes = [UInt8](repeating: 0, count: width * height)
+
+        let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
+        let sourceBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0) > 0 ? CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0) : CVPixelBufferGetBytesPerRow(pixelBuffer)
+        guard let baseAddress = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) ?? CVPixelBufferGetBaseAddress(pixelBuffer) else {
+            return nil
+        }
+
+        switch pixelFormat {
+        case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+             kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+             kCVPixelFormatType_OneComponent8:
+            copy8BitLuma(baseAddress: baseAddress,
+                         sourceWidth: sourceWidth,
+                         sourceHeight: sourceHeight,
+                         sourceBytesPerRow: sourceBytesPerRow,
+                         destinationWidth: width,
+                         destinationHeight: height,
+                         destination: &bytes)
+
+        case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+             kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+             kCVPixelFormatType_OneComponent16:
+            copy16BitLuma(baseAddress: baseAddress,
+                          sourceWidth: sourceWidth,
+                          sourceHeight: sourceHeight,
+                          sourceBytesPerRow: sourceBytesPerRow,
+                          destinationWidth: width,
+                          destinationHeight: height,
+                          destination: &bytes)
+
+        default:
+            copy8BitLuma(baseAddress: baseAddress,
+                         sourceWidth: sourceWidth,
+                         sourceHeight: sourceHeight,
+                         sourceBytesPerRow: sourceBytesPerRow,
+                         destinationWidth: width,
+                         destinationHeight: height,
+                         destination: &bytes)
+        }
+
+        return TrackingLumaFrame(width: width, height: height, bytes: bytes)
+    }
+
+    private func copy8BitLuma(baseAddress: UnsafeMutableRawPointer,
+                              sourceWidth: Int,
+                              sourceHeight: Int,
+                              sourceBytesPerRow: Int,
+                              destinationWidth: Int,
+                              destinationHeight: Int,
+                              destination: inout [UInt8]) {
+        let source = baseAddress.assumingMemoryBound(to: UInt8.self)
+        for y in 0..<destinationHeight {
+            let sourceY = min(sourceHeight - 1, y * sourceHeight / destinationHeight)
+            let sourceRow = source.advanced(by: sourceY * sourceBytesPerRow)
+            let destinationRow = y * destinationWidth
+            for x in 0..<destinationWidth {
+                let sourceX = min(sourceWidth - 1, x * sourceWidth / destinationWidth)
+                destination[destinationRow + x] = sourceRow[sourceX]
+            }
+        }
+    }
+
+    private func copy16BitLuma(baseAddress: UnsafeMutableRawPointer,
+                               sourceWidth: Int,
+                               sourceHeight: Int,
+                               sourceBytesPerRow: Int,
+                               destinationWidth: Int,
+                               destinationHeight: Int,
+                               destination: inout [UInt8]) {
+        let source = baseAddress.assumingMemoryBound(to: UInt16.self)
+        let sourceStride = sourceBytesPerRow / MemoryLayout<UInt16>.stride
+        for y in 0..<destinationHeight {
+            let sourceY = min(sourceHeight - 1, y * sourceHeight / destinationHeight)
+            let sourceRow = source.advanced(by: sourceY * sourceStride)
+            let destinationRow = y * destinationWidth
+            for x in 0..<destinationWidth {
+                let sourceX = min(sourceWidth - 1, x * sourceWidth / destinationWidth)
+                destination[destinationRow + x] = UInt8(clamping: Int(sourceRow[sourceX] >> 8))
+            }
+        }
+    }
+}
+
+private struct CameraCalibration: Equatable {
+    var width: Int
+    var height: Int
+    var fx: Double
+    var fy: Double
+    var cx: Double
+    var cy: Double
+}
+
+private struct TrackingLumaFrame {
+    var width: Int
+    var height: Int
+    var bytes: [UInt8]
 }
