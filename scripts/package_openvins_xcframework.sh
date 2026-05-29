@@ -32,7 +32,8 @@ cat <<EOF
 OpenVINS XCFramework created:
   $OUTPUT
 
-This framework contains OpenVINS only. The app target still needs matching
-iOS/simulator slices for OpenCV, Boost, Ceres, SuiteSparse, glog, and gflags
-before the real OpenVINS bridge can be linked.
+This framework contains OpenVINS only. The current iOS build disables dynamic
+initialization, simulator helpers, file output, ROS, and ArUco. The app target
+still needs a matching iOS/simulator OpenCV XCFramework before the real
+OpenVINS bridge can be linked.
 EOF

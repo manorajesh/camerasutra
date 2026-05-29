@@ -105,7 +105,10 @@ cmake -S "$OPENVINS_DIR/ov_msckf" \
   -DENABLE_ROS=OFF \
   -DENABLE_ARUCO_TAGS=OFF \
   -DBUILD_OPENVINS_TOOLS=OFF \
+  -DBUILD_OPENVINS_SIMULATION=OFF \
   -DOPENVINS_LIBRARY_TYPE=STATIC \
+  -DOPENVINS_DISABLE_DYNAMIC_INITIALIZER=ON \
+  -DOPENVINS_DISABLE_FILE_OUTPUT=ON \
   -DDISABLE_MATPLOTLIB=ON
 
 cmake --build "$BUILD_DIR/$PLATFORM" --config "$BUILD_TYPE" --target ov_msckf_lib
@@ -116,7 +119,7 @@ cat <<EOF
 OpenVINS iOS build finished.
 
 Next integration step:
-  1. Build dependency slices for Eigen/OpenCV/Boost/Ceres if CMake cannot find them.
-  2. Package device/simulator outputs into an XCFramework.
-  3. Link the XCFramework into the app target and replace the current bridge stub.
+  1. Build the other platform slice with this script.
+  2. Run scripts/package_openvins_xcframework.sh.
+  3. Add a matching OpenCV XCFramework before enabling the real bridge.
 EOF

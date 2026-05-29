@@ -38,7 +38,7 @@ scripts/package_openvins_xcframework.sh
 
 The build script compiles `third_party/open_vins/ov_msckf` with ROS, ArUco, and desktop test executables disabled, then installs static library slices under `Vendor/OpenVINS`. The packaging script creates `Vendor/OpenVINS/OpenVINS.xcframework`.
 
-The OpenVINS archive is only one piece of the runtime link. The app target still needs matching iOS and simulator slices for OpenCV, Boost, Ceres, SuiteSparse, glog, and gflags before `OpenVINSBridge.mm` can call `ov_msckf::VioManager` directly.
+The iOS OpenVINS archive is built in a phone-runtime profile: dynamic initialization, simulator helpers, file output, ROS, and ArUco are disabled. That removes the Ceres/SuiteSparse/glog/gflags runtime dependency path for the initial integration. The app target still needs a matching iOS and simulator OpenCV XCFramework before `OpenVINSBridge.mm` can call `ov_msckf::VioManager` directly.
 
 The real bridge path is guarded by `CAMERASUTRA_ENABLE_OPENVINS_RUNTIME`. Until the dependency XCFrameworks are linked into the app target, keep that flag off. To syntax-check the gated runtime code against locally installed headers:
 
