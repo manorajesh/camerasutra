@@ -40,6 +40,7 @@ import Combine
 struct ContentView: View {
     @StateObject private var session = CaptureSession()
     @StateObject private var motion = MotionTracker()
+    @StateObject private var vio = VIOTracker()
     @State private var showFormatSheet = false
     @State private var cameraAccessDenied = false
     
@@ -52,6 +53,9 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
         .task {
             session.motionSamples = motion.sampleStore
+            session.vioTracker = vio
+            motion.vioTracker = vio
+            vio.start()
             motion.start()
             if await requestCameraAccess() {
                 cameraAccessDenied = false
@@ -146,6 +150,8 @@ struct ContentView: View {
                 Text("rot \(formatQuaternion(debugSnapshot.rotation))")
                 Text("points \(debugSnapshot.worldPoints.count)")
                 Text(String(format: "depth %.0f fps", session.depthFPS))
+                Text("vio \(vio.pose.status)")
+                Text("vio frames \(vio.pose.cameraFrameCount) imu \(vio.pose.imuSampleCount)")
                 Text(String(format: "pitch %+.1f  roll %+.1f  yaw %+.1f",
                             motion.pitchDeg,
                             motion.rollDeg,
@@ -163,6 +169,7 @@ struct ContentView: View {
                     Spacer()
                     Button {
                         motion.recenter()
+                        vio.reset()
                     } label: {
                         Image(systemName: "scope")
                             .font(.title3.weight(.semibold))
@@ -407,6 +414,7 @@ struct FormatPickerSheet: View {
 final class MotionTracker: ObservableObject {
     private let manager = CMMotionManager()
     let sampleStore = MotionSampleStore()
+    weak var vioTracker: VIOTracker?
     @Published var pitchDeg: Double = 0
     @Published var rollDeg: Double = 0
     @Published var yawDeg: Double = 0
@@ -432,6 +440,19 @@ final class MotionTracker: ObservableObject {
         manager.startDeviceMotionUpdates(using: referenceFrame, to: .main) { [weak self] motion, _ in
             guard let self, let motion else { return }
             self.sampleStore.update(from: motion)
+            self.vioTracker?.pushIMU(
+                timestamp: motion.timestamp,
+                acceleration: SIMD3<Double>(
+                    motion.userAcceleration.x * 9.80665,
+                    motion.userAcceleration.y * 9.80665,
+                    motion.userAcceleration.z * 9.80665
+                ),
+                gyro: SIMD3<Double>(
+                    motion.rotationRate.x,
+                    motion.rotationRate.y,
+                    motion.rotationRate.z
+                )
+            )
             let a = motion.attitude
             self.pitchDeg = a.pitch * 180 / .pi
             self.rollDeg = a.roll * 180 / .pi
@@ -528,6 +549,7 @@ final class CaptureSession: NSObject, ObservableObject, @unchecked Sendable {
     @Published var intrinsicsCy: Double = 0
     @Published var trackingSnapshot = TrackingSnapshot()
     var motionSamples: MotionSampleStore?
+    weak var vioTracker: VIOTracker?
     
     // AVFoundation
     private let session = AVCaptureSession()
@@ -756,6 +778,14 @@ extension CaptureSession: AVCaptureDataOutputSynchronizerDelegate {
     }
     
     private func handleVideoSampleBuffer(_ sample: CMSampleBuffer, time: Date) {
+        if let pixelBuffer = CMSampleBufferGetImageBuffer(sample) {
+            let timestamp = CMSampleBufferGetPresentationTimeStamp(sample).seconds
+            DispatchQueue.main.async {
+                self.vioTracker?.pushLumaFrame(timestamp: timestamp, pixelBuffer: pixelBuffer)
+                self.vioTracker?.refreshPose()
+            }
+        }
+
         // FPS
         if let last = lastVideoTime {
             let dt = time.timeIntervalSince(last)

@@ -26,7 +26,16 @@ xcodebuild -project camerasutra.xcodeproj -scheme camerasutra -sdk iphonesimulat
 
 Hardware camera, LiDAR, ProRes, and motion behavior must be validated on a supported iPhone Pro device.
 
+## OpenVINS iOS Build
+
+The OpenVINS iOS build is scaffolded as a separate CMake step:
+
+```sh
+scripts/build_openvins_ios.sh
+```
+
+The script builds from `third_party/open_vins/ov_msckf` with ROS and ArUco disabled. It expects iOS-compatible dependency prefixes for Eigen, OpenCV, Boost, and Ceres to be available through `CMAKE_PREFIX_PATH`.
+
 ## License
 
 Project code outside `third_party/open_vins` is licensed under the MIT License. OpenVINS is GPLv3 and remains under its own license in `third_party/open_vins/LICENSE`.
-

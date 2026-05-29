@@ -167,7 +167,7 @@ struct TrackingDebugView: UIViewRepresentable {
 }
 
 private extension SCNVector3 {
-    init(_ v: SIMD3<Float>) {
+    nonisolated init(_ v: SIMD3<Float>) {
         self.init(v.x, v.y, v.z)
     }
 }
