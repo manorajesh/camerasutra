@@ -41,6 +41,7 @@ struct ContentView: View {
     @StateObject private var session = CaptureSession()
     @StateObject private var motion = MotionTracker()
     @State private var showFormatSheet = false
+    @State private var cameraAccessDenied = false
     
     var body: some View {
         ZStack {
@@ -50,9 +51,17 @@ struct ContentView: View {
         }
         .preferredColorScheme(.dark)
         .task {
+            session.motionSamples = motion.sampleStore
             motion.start()
+            if await requestCameraAccess() {
+                cameraAccessDenied = false
+                session.start()
+            } else {
+                cameraAccessDenied = true
+            }
         }
         .onDisappear {
+            session.stop()
             motion.stop()
         }
         .sheet(isPresented: $showFormatSheet) {
@@ -128,13 +137,15 @@ struct ContentView: View {
 
     private var trackingPane: some View {
         ZStack(alignment: .topLeading) {
-            TrackingDebugView(snapshot: motion.rotationSnapshot)
+            TrackingDebugView(snapshot: debugSnapshot)
                 .ignoresSafeArea()
                 .background(Color.black)
             VStack(alignment: .leading, spacing: 6) {
-                Text(motion.rotationSnapshot.status)
+                Text(cameraAccessDenied ? "Camera access denied" : debugSnapshot.status)
                     .font(.caption.weight(.bold).monospaced())
-                Text("rot \(formatQuaternion(motion.rotationSnapshot.rotation))")
+                Text("rot \(formatQuaternion(debugSnapshot.rotation))")
+                Text("points \(debugSnapshot.worldPoints.count)")
+                Text(String(format: "depth %.0f fps", session.depthFPS))
                 Text(String(format: "pitch %+.1f  roll %+.1f  yaw %+.1f",
                             motion.pitchDeg,
                             motion.rollDeg,
@@ -164,6 +175,20 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    private var debugSnapshot: TrackingSnapshot {
+        guard !session.trackingSnapshot.worldPoints.isEmpty else {
+            return motion.rotationSnapshot
+        }
+
+        var snapshot = session.trackingSnapshot
+        snapshot.rotation = motion.rotationSnapshot.rotation
+        snapshot.position = .zero
+        snapshot.predictedPosition = .zero
+        snapshot.velocity = .zero
+        snapshot.trail = [.zero]
+        return snapshot
     }
     
     // MARK: Panels
@@ -275,6 +300,23 @@ struct ContentView: View {
 
     private func formatQuaternion(_ q: simd_quatf) -> String {
         String(format: "%+.2f, %+.2f, %+.2f, %+.2f", q.vector.x, q.vector.y, q.vector.z, q.vector.w)
+    }
+
+    private func requestCameraAccess() async -> Bool {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            return true
+        case .notDetermined:
+            return await withCheckedContinuation { continuation in
+                AVCaptureDevice.requestAccess(for: .video) { granted in
+                    continuation.resume(returning: granted)
+                }
+            }
+        case .denied, .restricted:
+            return false
+        @unknown default:
+            return false
+        }
     }
 }
 
@@ -401,6 +443,7 @@ final class MotionTracker: ObservableObject {
                 predictedPosition: .zero,
                 velocity: .zero,
                 rotation: self.sampleStore.relativeRotation(),
+                worldPoints: [],
                 residualMeters: 0,
                 inlierCount: 0,
                 mapPointCount: 0,
@@ -508,6 +551,7 @@ final class CaptureSession: NSObject, ObservableObject, @unchecked Sendable {
     private var lastDepthPreviewUpdate: Date = .distantPast
     private let previewThrottle: TimeInterval = 1.0 / 15.0
     private let tracker = RotationLockedDepthTracker()
+    private let pointCloudProjector = DepthPointCloudProjector()
     private var latestIntrinsics: TrackingIntrinsics?
     
     func start() {
@@ -769,16 +813,34 @@ extension CaptureSession: AVCaptureDataOutputSynchronizerDelegate {
         ? depth
         : depth.converting(toDepthDataType: kCVPixelFormatType_DepthFloat32)
         
-        if let intrinsics = latestIntrinsics {
-            let snapshot = tracker.process(
-                depthMap: depth32.depthDataMap,
-                intrinsics: intrinsics,
-                motion: motionSamples?.latest(),
-                timestamp: time.timeIntervalSinceReferenceDate
-            )
+        let rotation = motionSamples?.relativeRotation() ?? simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
+        guard let intrinsics = latestIntrinsics else {
+            var snapshot = TrackingSnapshot()
+            snapshot.rotation = rotation
+            snapshot.status = "Waiting for intrinsics"
             DispatchQueue.main.async {
                 self.trackingSnapshot = snapshot
             }
+            return
+        }
+
+        let worldPoints = pointCloudProjector.makeWorldPoints(
+            depthMap: depth32.depthDataMap,
+            intrinsics: intrinsics,
+            rotation: rotation
+        )
+
+        var snapshot = TrackingSnapshot()
+        snapshot.rotation = rotation
+        snapshot.worldPoints = worldPoints
+        snapshot.mapPointCount = worldPoints.count
+        snapshot.confidence = worldPoints.isEmpty ? 0 : 1
+        snapshot.status = worldPoints.isEmpty ? "Waiting for LiDAR depth" : "LiDAR point cloud"
+
+        DispatchQueue.main.async {
+            self.validDepthPoints = worldPoints.count
+            self.totalDepthPoints = CVPixelBufferGetWidth(depth32.depthDataMap) * CVPixelBufferGetHeight(depth32.depthDataMap)
+            self.trackingSnapshot = snapshot
         }
     }
     

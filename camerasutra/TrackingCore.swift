@@ -73,6 +73,7 @@ struct TrackingSnapshot: Sendable {
     var predictedPosition: SIMD3<Float> = .zero
     var velocity: SIMD3<Float> = .zero
     var rotation: simd_quatf = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
+    var worldPoints: [SIMD3<Float>] = []
     var residualMeters: Float = 0
     var inlierCount: Int = 0
     var mapPointCount: Int = 0
@@ -100,6 +101,57 @@ struct TrackingIntrinsics: Sendable {
             cy: cy * sy,
             referenceWidth: Float(width),
             referenceHeight: Float(height)
+        )
+    }
+}
+
+final class DepthPointCloudProjector: @unchecked Sendable {
+    private let maxPoints: Int
+    private let minDepth: Float
+    private let maxDepth: Float
+
+    init(maxPoints: Int = 1200, minDepth: Float = 0.18, maxDepth: Float = 7.5) {
+        self.maxPoints = maxPoints
+        self.minDepth = minDepth
+        self.maxDepth = maxDepth
+    }
+
+    func makeWorldPoints(depthMap: CVPixelBuffer,
+                         intrinsics originalIntrinsics: TrackingIntrinsics,
+                         rotation: simd_quatf) -> [SIMD3<Float>] {
+        CVPixelBufferLockBaseAddress(depthMap, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(depthMap, .readOnly) }
+
+        let width = CVPixelBufferGetWidth(depthMap)
+        let height = CVPixelBufferGetHeight(depthMap)
+        guard let base = CVPixelBufferGetBaseAddress(depthMap) else { return [] }
+
+        let intrinsics = originalIntrinsics.scaled(to: width, height: height)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(depthMap)
+        let step = max(2, Int(sqrt(Double(width * height) / Double(maxPoints))))
+        var points: [SIMD3<Float>] = []
+        points.reserveCapacity(maxPoints)
+
+        for y in stride(from: step, to: height - step, by: step) {
+            let row = base.advanced(by: y * bytesPerRow).assumingMemoryBound(to: Float32.self)
+            for x in stride(from: step, to: width - step, by: step) {
+                let z = row[x]
+                guard z.isFinite, z >= minDepth, z <= maxDepth else { continue }
+
+                let cameraPoint = unproject(x: Float(x), y: Float(y), z: z, intrinsics: intrinsics)
+                points.append(rotation.act(cameraPoint))
+                if points.count >= maxPoints { return points }
+            }
+        }
+
+        return points
+    }
+
+    private func unproject(x: Float, y: Float, z: Float, intrinsics: TrackingIntrinsics) -> SIMD3<Float> {
+        SIMD3<Float>(
+            (x - intrinsics.cx) * z / max(intrinsics.fx, 1),
+            (y - intrinsics.cy) * z / max(intrinsics.fy, 1),
+            -z
         )
     }
 }
@@ -355,6 +407,7 @@ final class RotationLockedDepthTracker: @unchecked Sendable {
             predictedPosition: predicted,
             velocity: velocity,
             rotation: rotation,
+            worldPoints: [],
             residualMeters: residual.isFinite ? residual : 0,
             inlierCount: inliers,
             mapPointCount: map.count,

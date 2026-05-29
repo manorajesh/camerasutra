@@ -29,8 +29,10 @@ struct TrackingDebugView: UIViewRepresentable {
         private let solvedNode = SCNNode()
         private let predictedNode = SCNNode()
         private let trailNode = SCNNode()
+        private let pointCloudNode = SCNNode()
         private let worldRoot = SCNNode()
         private let phoneRoot = SCNNode()
+        private var lastPointCloudSignature: (count: Int, first: SIMD3<Float>?, last: SIMD3<Float>?) = (0, nil, nil)
 
         func configureScene() {
             scene.rootNode.addChildNode(worldRoot)
@@ -62,6 +64,7 @@ struct TrackingDebugView: UIViewRepresentable {
             worldRoot.addChildNode(solvedNode)
             worldRoot.addChildNode(predictedNode)
             worldRoot.addChildNode(trailNode)
+            worldRoot.addChildNode(pointCloudNode)
         }
 
         func update(_ snapshot: TrackingSnapshot) {
@@ -73,6 +76,7 @@ struct TrackingDebugView: UIViewRepresentable {
             solvedNode.opacity = 0.95
             predictedNode.opacity = snapshot.status == "Rotation only" ? 0 : 0.62
             rebuildTrail(snapshot.trail)
+            rebuildPointCloud(snapshot.worldPoints)
         }
 
         private func addGrid() {
@@ -96,6 +100,35 @@ struct TrackingDebugView: UIViewRepresentable {
             for index in 1..<points.count {
                 addLine(from: points[index - 1], to: points[index], color: UIColor.systemCyan.withAlphaComponent(0.85), parent: trailNode)
             }
+        }
+
+        private func rebuildPointCloud(_ points: [SIMD3<Float>]) {
+            let signature: (count: Int, first: SIMD3<Float>?, last: SIMD3<Float>?) = (points.count, points.first, points.last)
+            guard signature.count != lastPointCloudSignature.count ||
+                    signature.first != lastPointCloudSignature.first ||
+                    signature.last != lastPointCloudSignature.last else {
+                return
+            }
+            lastPointCloudSignature = signature
+
+            guard !points.isEmpty else {
+                pointCloudNode.geometry = nil
+                return
+            }
+
+            let source = SCNGeometrySource(vertices: points.map(SCNVector3.init))
+            let indices = points.indices.map(UInt32.init)
+            let element = SCNGeometryElement(indices: indices, primitiveType: .point)
+            element.pointSize = 4
+            element.minimumPointScreenSpaceRadius = 1
+            element.maximumPointScreenSpaceRadius = 6
+
+            let geometry = SCNGeometry(sources: [source], elements: [element])
+            let material = SCNMaterial()
+            material.diffuse.contents = UIColor.systemTeal.withAlphaComponent(0.92)
+            material.emission.contents = UIColor.systemTeal.withAlphaComponent(0.45)
+            geometry.materials = [material]
+            pointCloudNode.geometry = geometry
         }
 
         private func cameraGlyph(color: UIColor) -> SCNGeometry {
