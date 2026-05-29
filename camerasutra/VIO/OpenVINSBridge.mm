@@ -302,6 +302,14 @@ private:
         params.camera_extrinsics.clear();
         params.camera_extrinsics.insert({0, extrinsics});
 
+        // InertialInitializerOptions has its own camera calibration maps that are
+        // validated separately from VioManagerOptions's maps. Mirror the same data.
+        params.init_options.num_cameras = 1;
+        params.init_options.camera_intrinsics.clear();
+        params.init_options.camera_intrinsics.insert({0, camera});
+        params.init_options.camera_extrinsics.clear();
+        params.init_options.camera_extrinsics.insert({0, extrinsics});
+
         params.vec_dw << 1.0, 0.0, 0.0, 1.0, 0.0, 1.0;
         params.vec_da << 1.0, 0.0, 0.0, 1.0, 0.0, 1.0;
         params.vec_tg.setZero();
