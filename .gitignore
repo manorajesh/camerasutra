@@ -1,4 +1,5 @@
 DerivedData/
 build/
 Vendor/
+third_party/eigen/
 *.xcresult
