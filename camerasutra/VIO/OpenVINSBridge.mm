@@ -291,12 +291,12 @@ private:
         params.zupt_only_at_beginning = true;
         params.init_options.init_max_features = 80;
         params.init_options.init_window_time = 1.0;
-        // Default 1.0 px is too tight for real devices. Even with focus locked to
-        // .autoFocus (single pass → auto-locked), the lens takes ~0.5 s to settle,
-        // producing 3-5 px of visual disparity from focal-plane shift. 5.0 px covers
-        // that settle period; the IMU still correctly identifies the device as
-        // stationary (gravity computation uses accelerometer, not visual disparity).
+        // The visual disparity check is a stationarity heuristic, not part of the
+        // actual static IMU initialization. On iPhone, focus/OIS/ISP settling can
+        // produce 3-6 px of apparent disparity on a tripod. Since ZUPT is enabled,
+        // let the IMU static test decide whether initialization is allowed.
         params.init_options.init_max_disparity = 5.0;
+        params.init_options.init_static_use_disparity = false;
         // Slightly looser IMU threshold for the same reason: phone in-hand has more
         // accelerometer noise than a robot or gimbal.
         params.init_options.init_imu_thresh = 1.5;
