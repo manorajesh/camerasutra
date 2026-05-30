@@ -753,6 +753,18 @@ final class CaptureSession: NSObject, ObservableObject, @unchecked Sendable {
             }
             
             session.commitConfiguration()
+
+            // Lock focus after a single autofocus pass. Continuous AF causes the
+            // focal plane to drift 3-8 px between frames, which prevents the VIO
+            // static initializer from detecting a stationary window. .autoFocus
+            // does one focus sweep then automatically transitions to .locked, giving
+            // a sharp image without continuous hunting.
+            if device.isFocusModeSupported(.autoFocus) {
+                device.focusMode = .autoFocus
+            }
+            // Exposure and white balance can keep auto-adjusting; they only change
+            // pixel values, not feature positions, so they don't affect VIO disparity.
+
             device.unlockForConfiguration()
             tracker.reset()
             latestIntrinsics = nil

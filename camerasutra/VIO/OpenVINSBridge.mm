@@ -291,10 +291,12 @@ private:
         params.zupt_only_at_beginning = true;
         params.init_options.init_max_features = 80;
         params.init_options.init_window_time = 1.0;
-        // Default 1.0 px is tuned for tripod/gimbal setups. Handheld phones produce
-        // 2-5 px of disparity from respiration and heartbeat even when "still".
-        // 3.0 passes normal held-still phone tremor while rejecting deliberate motion.
-        params.init_options.init_max_disparity = 3.0;
+        // Default 1.0 px is too tight for real devices. Even with focus locked to
+        // .autoFocus (single pass → auto-locked), the lens takes ~0.5 s to settle,
+        // producing 3-5 px of visual disparity from focal-plane shift. 5.0 px covers
+        // that settle period; the IMU still correctly identifies the device as
+        // stationary (gravity computation uses accelerometer, not visual disparity).
+        params.init_options.init_max_disparity = 5.0;
         // Slightly looser IMU threshold for the same reason: phone in-hand has more
         // accelerometer noise than a robot or gimbal.
         params.init_options.init_imu_thresh = 1.5;
